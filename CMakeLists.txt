@@ -1,5 +1,6 @@
 cmake_minimum_required(VERSION 3.10)
 cmake_policy(SET CMP0072 NEW)
+cmake_policy(SET CMP0075 NEW)
 project(DearJack)
 
 set(CMAKE_CXX_STANDARD 20)
@@ -9,11 +10,13 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_C_COMPILER clang)
 set(CMAKE_CXX_COMPILER clang++)
 
+set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 # Find packages
 find_package(OpenGL REQUIRED)
 find_package(PkgConfig REQUIRED)
 pkg_check_modules(GLFW REQUIRED glfw3)
 pkg_check_modules(JACK REQUIRED jack)
+find_package(LLVM REQUIRED CONFIG)
 
 # Source files
 set(IMGUI_SRC

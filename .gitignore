@@ -18,3 +18,14 @@ Thumbs.db
 *.tmp
 
 .cache/
+build/
+build2/
+.ninja*/
+.idea/
+.cmake/
+.ninja*
+build.ninja
+cmake_install.cmake
+CMakeCache.txt.bak
+DearJack
+Makefile
