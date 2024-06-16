@@ -11,12 +11,19 @@ set(CMAKE_C_COMPILER clang)
 set(CMAKE_CXX_COMPILER clang++)
 
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
+
 # Find packages
 find_package(OpenGL REQUIRED)
 find_package(PkgConfig REQUIRED)
 pkg_check_modules(GLFW REQUIRED glfw3)
 pkg_check_modules(JACK REQUIRED jack)
 find_package(LLVM REQUIRED CONFIG)
+
+# Include LLVM directories and definitions
+list(APPEND CMAKE_MODULE_PATH "${LLVM_DIR}")
+include_directories(${LLVM_INCLUDE_DIRS})
+separate_arguments(LLVM_DEFINITIONS_LIST NATIVE_COMMAND ${LLVM_DEFINITIONS})
+add_definitions(${LLVM_DEFINITIONS_LIST})
 
 # Source files
 set(IMGUI_SRC
@@ -39,7 +46,8 @@ target_include_directories(${PROJECT_NAME} PRIVATE
     ${CMAKE_SOURCE_DIR}/external/imgui/backends
     ${GLFW_INCLUDE_DIRS}
     ${JACK_INCLUDE_DIRS}
+    ${LLVM_INCLUDE_DIRS}
 )
 
 # Link libraries
-target_link_libraries(${PROJECT_NAME} PRIVATE ${OPENGL_LIBRARIES} ${GLFW_LIBRARIES} ${JACK_LIBRARIES})
+target_link_libraries(${PROJECT_NAME} PRIVATE ${OPENGL_LIBRARIES} ${GLFW_LIBRARIES} ${JACK_LIBRARIES} ${LLVM_LIBRARIES})
