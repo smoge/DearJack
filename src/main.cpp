@@ -9,80 +9,90 @@
 #include <jack/jack.h>
 #include <thread>  // For std::thread
 #include <mutex>
+#include <memory>  // For std::unique_ptr
 
 static void glfw_error_callback(int error, const char *description) {
     fprintf(stderr, "Glfw Error %d: %s\n", error, description);
 }
 
-jack_client_t *client = nullptr;
-jack_port_t *output_port = nullptr;
-double phase = 0.0;
-std::atomic<double> frequency(440.0); // Controls the frequency of the sine wave
-std::atomic<bool> keep_running(true); // Control variable for the audio thread
-std::mutex freq_mutex;
+class JackClient {
+public:
+    JackClient(const char* client_name) {
+        client = jack_client_open(client_name, JackNullOption, nullptr);
+        if (client == nullptr) {
+            fprintf(stderr, "jack_client_open() failed\n");
+            throw std::runtime_error("Failed to open JACK client");
+        }
 
-int process(jack_nframes_t nframes, void *arg) {
-    (void)arg; // Avoid unused parameter warning
-    double sample_rate = jack_get_sample_rate(client);
-    double current_frequency;
-    {
-        std::lock_guard<std::mutex> lock(freq_mutex);
-        current_frequency = frequency.load();
-    }
-    double phase_increment = 2.0 * M_PI * current_frequency / sample_rate;
-    jack_default_audio_sample_t *out =
-        (jack_default_audio_sample_t *)jack_port_get_buffer(output_port, nframes);
-    for (jack_nframes_t i = 0; i < nframes; i++) {
-        out[i] = sin(phase); // Generate sine wave
-        phase += phase_increment;
-        if (phase >= 2.0 * M_PI) {
-            phase -= 2.0 * M_PI;
+        jack_set_process_callback(client, process, this);
+        jack_on_shutdown(client, jack_shutdown, this);
+
+        output_port = jack_port_register(client, "output", JACK_DEFAULT_AUDIO_TYPE, JackPortIsOutput, 0);
+        if (output_port == nullptr) {
+            fprintf(stderr, "no more JACK ports available\n");
+            jack_client_close(client);
+            throw std::runtime_error("Failed to register JACK port");
+        }
+
+        if (jack_activate(client)) {
+            fprintf(stderr, "cannot activate client");
+            jack_client_close(client);
+            throw std::runtime_error("Failed to activate JACK client");
         }
     }
-    return 0;
-}
 
-void jack_shutdown(void *arg) {
-    (void)arg; // Avoid unused parameter warning
-    exit(1);
-}
-
-void audio_thread_function() {
-    // Initialize Jack client
-    client = jack_client_open("DearJack", JackNullOption, nullptr);
-    if (client == nullptr) {
-        fprintf(stderr, "jack_client_open() failed\n");
-        return;
+    ~JackClient() {
+        if (client) {
+            jack_client_close(client);
+        }
     }
 
-    jack_set_process_callback(client, process, nullptr);
-    jack_on_shutdown(client, jack_shutdown, nullptr);
-
-    output_port = jack_port_register(client, "output", JACK_DEFAULT_AUDIO_TYPE,
-                                     JackPortIsOutput, 0);
-    if (output_port == nullptr) {
-        fprintf(stderr, "no more JACK ports available\n");
-        jack_client_close(client);
-        return;
+    void process_audio(jack_nframes_t nframes) {
+        double sample_rate = jack_get_sample_rate(client);
+        double phase_increment = 2.0 * M_PI * frequency / sample_rate;
+        auto* out = static_cast<jack_default_audio_sample_t*>(jack_port_get_buffer(output_port, nframes));
+        for (jack_nframes_t i = 0; i < nframes; ++i) {
+            out[i] = std::sin(phase);
+            phase += phase_increment;
+            if (phase >= 2.0 * M_PI) {
+                phase -= 2.0 * M_PI;
+            }
+        }
     }
 
-    if (jack_activate(client)) {
-        fprintf(stderr, "cannot activate client");
-        jack_client_close(client);
-        return;
+    void set_frequency(double freq) {
+        std::lock_guard<std::mutex> lock(freq_mutex);
+        frequency = freq;
     }
 
-    // Keep the thread running to handle audio processing
-    while (keep_running.load()) {
-        std::this_thread::sleep_for(std::chrono::seconds(1));
+    static int process(jack_nframes_t nframes, void *arg) {
+        auto* self = static_cast<JackClient*>(arg);
+        self->process_audio(nframes);
+        return 0;
     }
 
-    jack_client_close(client);
-}
+    static void jack_shutdown(void *arg) {
+        (void)arg;
+        exit(1);
+    }
+
+private:
+    jack_client_t *client = nullptr;
+    jack_port_t *output_port = nullptr;
+    double phase = 0.0;
+    double frequency = 440.0;
+    std::mutex freq_mutex;
+};
 
 int main(int, char **) {
-    // Start the audio thread
-    std::thread audio_thread(audio_thread_function);
+    std::unique_ptr<JackClient> jack_client;
+
+    try {
+        jack_client = std::make_unique<JackClient>("DearJack");
+    } catch (const std::exception &e) {
+        fprintf(stderr, "Error initializing JackClient: %s\n", e.what());
+        return 1;
+    }
 
     // Setup GLFW
     glfwSetErrorCallback(glfw_error_callback);
@@ -127,8 +137,7 @@ int main(int, char **) {
             ImGui::Text("This is some useful text.");
             static float freq = 440.0f; // Slider value to control frequency
             if (ImGui::SliderFloat("Frequency", &freq, 20.0f, 2000.0f)) {
-                std::lock_guard<std::mutex> lock(freq_mutex);
-                frequency.store(static_cast<double>(freq));
+                jack_client->set_frequency(static_cast<double>(freq));
             }
             ImGui::End();
         }
@@ -152,12 +161,6 @@ int main(int, char **) {
 
     glfwDestroyWindow(window);
     glfwTerminate();
-
-    // Signal the audio thread to exit
-    keep_running.store(false);
-    if (audio_thread.joinable()) {
-        audio_thread.join();
-    }
 
     return 0;
 }

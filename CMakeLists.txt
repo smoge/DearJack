@@ -1,4 +1,5 @@
 cmake_minimum_required(VERSION 3.10)
+cmake_policy(SET CMP0072 NEW)
 project(DearJack)
 
 set(CMAKE_CXX_STANDARD 20)
@@ -6,17 +7,17 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
 # Find packages
 find_package(OpenGL REQUIRED)
-find_package(glfw3 3.3 REQUIRED)
-
-# Include directories
-include_directories(${CMAKE_SOURCE_DIR}/external/imgui)
-include_directories(${CMAKE_SOURCE_DIR}/external/imgui/backends)
-include_directories(${CMAKE_SOURCE_DIR}/external/jack2/common)
-include_directories(${CMAKE_SOURCE_DIR}/external/jack2/jack)
+find_package(PkgConfig REQUIRED)
+pkg_check_modules(GLFW REQUIRED glfw3)
+pkg_check_modules(JACK REQUIRED jack)
 
 # Source files
-file(GLOB IMGUI_SRC
-    ${CMAKE_SOURCE_DIR}/external/imgui/*.cpp
+set(IMGUI_SRC
+    ${CMAKE_SOURCE_DIR}/external/imgui/imgui.cpp
+    ${CMAKE_SOURCE_DIR}/external/imgui/imgui_draw.cpp
+    ${CMAKE_SOURCE_DIR}/external/imgui/imgui_demo.cpp
+    ${CMAKE_SOURCE_DIR}/external/imgui/imgui_tables.cpp
+    ${CMAKE_SOURCE_DIR}/external/imgui/imgui_widgets.cpp
     ${CMAKE_SOURCE_DIR}/external/imgui/backends/imgui_impl_glfw.cpp
     ${CMAKE_SOURCE_DIR}/external/imgui/backends/imgui_impl_opengl3.cpp
 )
@@ -25,5 +26,13 @@ file(GLOB SRC_FILES ${CMAKE_SOURCE_DIR}/src/*.cpp)
 # Add executable
 add_executable(${PROJECT_NAME} ${SRC_FILES} ${IMGUI_SRC})
 
+# Include directories
+target_include_directories(${PROJECT_NAME} PRIVATE
+    ${CMAKE_SOURCE_DIR}/external/imgui
+    ${CMAKE_SOURCE_DIR}/external/imgui/backends
+    ${GLFW_INCLUDE_DIRS}
+    ${JACK_INCLUDE_DIRS}
+)
+
 # Link libraries
-target_link_libraries(${PROJECT_NAME} OpenGL::GL glfw jack)
+target_link_libraries(${PROJECT_NAME} PRIVATE ${OPENGL_LIBRARIES} ${GLFW_LIBRARIES} ${JACK_LIBRARIES})
