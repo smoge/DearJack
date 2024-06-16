@@ -1,0 +1,18 @@
+# Build artifacts
+/build/
+CMakeFiles/
+CMakeCache.txt
+
+# Generated files
+compile_commands.json
+
+# VSCode settings
+.vscode/
+
+# OS generated files
+.DS_Store
+Thumbs.db
+
+# Temporary files
+*.log
+*.tmp
