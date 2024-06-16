@@ -8,6 +8,7 @@
 #include <cstdlib> // For exit
 #include <jack/jack.h>
 #include <thread>  // For std::thread
+#include <mutex>
 
 static void glfw_error_callback(int error, const char *description) {
     fprintf(stderr, "Glfw Error %d: %s\n", error, description);
@@ -18,11 +19,17 @@ jack_port_t *output_port = nullptr;
 double phase = 0.0;
 std::atomic<double> frequency(440.0); // Controls the frequency of the sine wave
 std::atomic<bool> keep_running(true); // Control variable for the audio thread
+std::mutex freq_mutex;
 
 int process(jack_nframes_t nframes, void *arg) {
     (void)arg; // Avoid unused parameter warning
     double sample_rate = jack_get_sample_rate(client);
-    double phase_increment = 2.0 * M_PI * frequency.load() / sample_rate;
+    double current_frequency;
+    {
+        std::lock_guard<std::mutex> lock(freq_mutex);
+        current_frequency = frequency.load();
+    }
+    double phase_increment = 2.0 * M_PI * current_frequency / sample_rate;
     jack_default_audio_sample_t *out =
         (jack_default_audio_sample_t *)jack_port_get_buffer(output_port, nframes);
     for (jack_nframes_t i = 0; i < nframes; i++) {
@@ -120,6 +127,7 @@ int main(int, char **) {
             ImGui::Text("This is some useful text.");
             static float freq = 440.0f; // Slider value to control frequency
             if (ImGui::SliderFloat("Frequency", &freq, 20.0f, 2000.0f)) {
+                std::lock_guard<std::mutex> lock(freq_mutex);
                 frequency.store(static_cast<double>(freq));
             }
             ImGui::End();
