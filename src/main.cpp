@@ -54,6 +54,7 @@ public:
     ~JackClient();
 
     DSP* get_dsp() const { return dsp.get(); }
+    const char* get_name() const { return name.c_str(); }
 
 private:
     static int process(jack_nframes_t nframes, void *arg);
@@ -64,11 +65,12 @@ private:
     jack_client_t *client = nullptr;
     jack_port_t *output_port = nullptr;
     std::unique_ptr<DSP> dsp;
+    std::string name;
 };
 
 JackClient::JackClient(const char *client_name, std::unique_ptr<DSP> dsp) 
-    : dsp(std::move(dsp)) {
-    client = jack_client_open(client_name, JackNullOption, nullptr);
+    : dsp(std::move(dsp)), name(client_name) {
+    client = jack_client_open(name.c_str(), JackNullOption, nullptr);
     if (!client) {
         throw std::runtime_error("Failed to open JACK client");
     }
@@ -104,15 +106,30 @@ void JackClient::jack_shutdown(void *arg) {
 
 void JackClient::process_audio(jack_nframes_t nframes) {
     double sample_rate = jack_get_sample_rate(client);
-    auto *out = static_cast<jack_default_audio_sample_t *>(jack_port_get_buffer(output_port, nframes));
+    auto *out = static_cast<jack_default_audio_sample_t *>(
+        jack_port_get_buffer(output_port, nframes));
     dsp->process_audio(nframes, out, sample_rate);
 }
 
+void render_client_gui(JackClient* client) {
+    ImGui::Begin(client->get_name());
+    ImGui::Text("Simple SinOsc");
+    static float freq = 440.0f;
+    if (ImGui::SliderFloat("Frequency", &freq, 20.0f, 2000.0f)) {
+        if (auto sin_osc = dynamic_cast<SinOsc*>(client->get_dsp())) {
+            sin_osc->set_frequency(static_cast<double>(freq));
+        }
+    }
+    ImGui::End();
+}
+
 int main(int, char **) {
-    std::unique_ptr<JackClient> jack_client;
+    std::unique_ptr<JackClient> jack_client1;
+    std::unique_ptr<JackClient> jack_client2;
 
     try {
-        jack_client = std::make_unique<JackClient>("DearJack", std::make_unique<SinOsc>());
+        jack_client1 = std::make_unique<JackClient>("DearJack1", std::make_unique<SinOsc>());
+        jack_client2 = std::make_unique<JackClient>("DearJack2", std::make_unique<SinOsc>());
     } catch (const std::exception &e) {
         std::fprintf(stderr, "Error initializing JackClient: %s\n", e.what());
         return 1;
@@ -150,15 +167,8 @@ int main(int, char **) {
         ImGui_ImplGlfw_NewFrame();
         ImGui::NewFrame();
 
-        ImGui::Begin("Synth");
-        ImGui::Text("Simple SinOsc");
-        static float freq = 440.0f;
-        if (ImGui::SliderFloat("Frequency", &freq, 20.0f, 2000.0f)) {
-            if (auto sin_osc = dynamic_cast<SinOsc*>(jack_client->get_dsp())) {
-                sin_osc->set_frequency(static_cast<double>(freq));
-            }
-        }
-        ImGui::End();
+        render_client_gui(jack_client1.get());
+        render_client_gui(jack_client2.get());
 
         ImGui::Render();
         int display_w, display_h;
