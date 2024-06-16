@@ -5,6 +5,10 @@ project(DearJack)
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
+# Set Clang as the compiler
+set(CMAKE_C_COMPILER clang)
+set(CMAKE_CXX_COMPILER clang++)
+
 # Find packages
 find_package(OpenGL REQUIRED)
 find_package(PkgConfig REQUIRED)

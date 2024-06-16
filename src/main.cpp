@@ -33,8 +33,7 @@ private:
     jack_client_t *client = nullptr;
     jack_port_t *output_port = nullptr;
     double phase = 0.0;
-    double frequency = 440.0;
-    std::mutex freq_mutex;
+    std::atomic<double> frequency = 440.0;
 };
 
 JackClient::JackClient(const char *client_name) {
@@ -63,8 +62,7 @@ JackClient::~JackClient() {
 }
 
 void JackClient::set_frequency(double freq) {
-    std::lock_guard<std::mutex> lock(freq_mutex);
-    frequency = freq;
+    frequency.store(freq);
 }
 
 int JackClient::process(jack_nframes_t nframes, void *arg) {
@@ -79,7 +77,7 @@ void JackClient::jack_shutdown(void *arg) {
 
 void JackClient::process_audio(jack_nframes_t nframes) {
     double sample_rate = jack_get_sample_rate(client);
-    double phase_increment = 2.0 * M_PI * frequency / sample_rate;
+    double phase_increment = 2.0 * M_PI * frequency.load() / sample_rate;
     auto *out = static_cast<jack_default_audio_sample_t *>(jack_port_get_buffer(output_port, nframes));
     for (jack_nframes_t i = 0; i < nframes; ++i) {
         out[i] = std::sin(phase);
