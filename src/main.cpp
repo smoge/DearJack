@@ -15,39 +15,40 @@
 
 // GLFW error callback function
 static void glfw_error_callback(int error, const char *description) {
-    std::fprintf(stderr, "Glfw Error %d: %s\n", error, description);
+  std::fprintf(stderr, "Glfw Error %d: %s\n", error, description);
 }
 
 // DSP base class
 class DSP {
 public:
-    virtual ~DSP() = default;
-    virtual void process_audio(jack_nframes_t nframes, float *out, double sample_rate) = 0;
+  virtual ~DSP() = default;
+  virtual void process_audio(jack_nframes_t nframes, float *out,
+                             double sample_rate) = 0;
 };
 
 // SinOsc DSP implementation
 class SinOsc : public DSP {
 public:
-    SinOsc() : phase(0.0), frequency(440.0) {}
+  SinOsc() : phase(0.0), frequency(440.0) {}
 
-    void set_frequency(double freq) { frequency.store(freq); }
+  void set_frequency(double freq) { frequency.store(freq); }
 
-    void process_audio(jack_nframes_t nframes, float *out, double sample_rate) override {
-        double phase_increment = 2.0 * M_PI * frequency.load() / sample_rate;
-        for (jack_nframes_t i = 0; i < nframes; ++i) {
-            out[i] = std::sin(phase);
-            phase += phase_increment;
-            if (phase >= 2.0 * M_PI) {
-                phase -= 2.0 * M_PI;
-            }
-        }
+  void process_audio(jack_nframes_t nframes, float *out,
+                     double sample_rate) override {
+    double phase_increment = 2.0 * M_PI * frequency.load() / sample_rate;
+    for (jack_nframes_t i = 0; i < nframes; ++i) {
+      out[i] = std::sin(phase);
+      phase += phase_increment;
+      if (phase >= 2.0 * M_PI) {
+        phase -= 2.0 * M_PI;
+      }
     }
+  }
 
 private:
-    double phase;
-    std::atomic<double> frequency;
+  double phase;
+  std::atomic<double> frequency;
 };
-
 class JackClient {
 public:
     JackClient(const char *client_name, std::unique_ptr<DSP> dsp);
@@ -55,6 +56,7 @@ public:
 
     DSP* get_dsp() const { return dsp.get(); }
     const char* get_name() const { return name.c_str(); }
+    float& get_frequency() { return frequency; }
 
 private:
     static int process(jack_nframes_t nframes, void *arg);
@@ -66,10 +68,11 @@ private:
     jack_port_t *output_port = nullptr;
     std::unique_ptr<DSP> dsp;
     std::string name;
+    float frequency; // Instance variable for frequency
 };
 
 JackClient::JackClient(const char *client_name, std::unique_ptr<DSP> dsp) 
-    : dsp(std::move(dsp)), name(client_name) {
+    : dsp(std::move(dsp)), name(client_name), frequency(440.0f) {
     client = jack_client_open(name.c_str(), JackNullOption, nullptr);
     if (!client) {
         throw std::runtime_error("Failed to open JACK client");
@@ -88,40 +91,39 @@ JackClient::JackClient(const char *client_name, std::unique_ptr<DSP> dsp)
     }
 }
 
+
 JackClient::~JackClient() {
-    if (client) {
-        jack_client_close(client);
-    }
+  if (client) {
+    jack_client_close(client);
+  }
 }
 
 int JackClient::process(jack_nframes_t nframes, void *arg) {
-    auto *self = static_cast<JackClient *>(arg);
-    self->process_audio(nframes);
-    return 0;
+  auto *self = static_cast<JackClient *>(arg);
+  self->process_audio(nframes);
+  return 0;
 }
 
-void JackClient::jack_shutdown(void *arg) {
-    std::exit(1);
-}
+void JackClient::jack_shutdown(void *arg) { std::exit(1); }
 
 void JackClient::process_audio(jack_nframes_t nframes) {
-    double sample_rate = jack_get_sample_rate(client);
-    auto *out = static_cast<jack_default_audio_sample_t *>(
-        jack_port_get_buffer(output_port, nframes));
-    dsp->process_audio(nframes, out, sample_rate);
+  double sample_rate = jack_get_sample_rate(client);
+  auto *out = static_cast<jack_default_audio_sample_t *>(
+      jack_port_get_buffer(output_port, nframes));
+  dsp->process_audio(nframes, out, sample_rate);
 }
 
 void render_client_gui(JackClient* client) {
     ImGui::Begin(client->get_name());
     ImGui::Text("Simple SinOsc");
-    static float freq = 440.0f;
-    if (ImGui::SliderFloat("Frequency", &freq, 20.0f, 2000.0f)) {
+    if (ImGui::SliderFloat("Frequency", &client->get_frequency(), 20.0f, 2000.0f)) {
         if (auto sin_osc = dynamic_cast<SinOsc*>(client->get_dsp())) {
-            sin_osc->set_frequency(static_cast<double>(freq));
+            sin_osc->set_frequency(static_cast<double>(client->get_frequency()));
         }
     }
     ImGui::End();
 }
+
 
 int main(int, char **) {
     std::unique_ptr<JackClient> jack_client1;
