@@ -35,21 +35,70 @@ void glfw_error_callback(int error, const char *description) noexcept {
 }
 
 // DSP base class
+// Abstract base class defining the interface for DSP processors
 class DSP {
 public:
+    // Virtual destructor for safe polymorphic destruction
     virtual ~DSP() = default;
+
+    // Process audio frames
+    // @param nframes: Number of frames to process
+    // @param inputs: Array of input buffers
+    // @param outputs: Array of output buffers
+    // @param sample_rate: Sample rate of the audio stream
     virtual void process_audio(jack_nframes_t nframes, float **inputs,
                                float **outputs, double sample_rate) = 0;
+
+    // Get the number of input channels
+    // @return: Number of input channels
     virtual int get_num_inputs() const = 0;
+
+    // Get the number of output channels
+    // @return: Number of output channels
     virtual int get_num_outputs() const = 0;
+
+    // Set a parameter's value
+    // @param name: Name of the parameter
+    // @param value: New value for the parameter
     virtual void set_parameter(const std::string &name,
                                const std::variant<float, int, std::string> &value) = 0;
+
+    // Get a parameter's value
+    // @param name: Name of the parameter
+    // @return: Value of the parameter
     virtual std::variant<float, int, std::string> get_parameter(const std::string &name) const = 0;
+
+    // Get the names of all available parameters
+    // @return: Vector containing the names of all parameters
     virtual std::vector<std::string> get_parameter_names() const = 0;
 };
 
 // SinOsc DSP implementation
-class SinOsc : public DSP {
+/**
+ * Class representing a Sinusoidal Oscillator DSP.
+ * 
+ * This class implements the DSP interface with methods to set parameters like frequency and amplitude,
+ * get parameter values, process audio frames, and retrieve parameter names.
+ * The oscillator generates a sine wave based on the frequency and amplitude parameters.
+ * 
+ * Parameters:
+ * - frequency: Frequency of the sine wave in Hz.
+ * - amplitude: Amplitude of the sine wave.
+ * 
+ * Methods:
+ * - set_parameter: Set the value of a parameter (frequency or amplitude).
+ * - get_parameter: Get the value of a parameter (frequency or amplitude).
+ * - get_parameter_names: Get the names of available parameters (frequency, amplitude).
+ * - process_audio: Process audio frames by generating a sine wave.
+ * - get_num_inputs: Get the number of input channels (always 0 for this oscillator).
+ * - get_num_outputs: Get the number of output channels (always 1 for this oscillator).
+ * 
+ * Member Variables:
+ * - phase: Current phase of the oscillator.
+ * - frequency: Atomic variable for storing the frequency.
+ * - amplitude: Atomic variable for storing the amplitude.
+ */
+ class SinOsc : public DSP {
 public:
     SinOsc()
         : phase(0.0), frequency(DEFAULT_FREQUENCY), amplitude(DEFAULT_AMPLITUDE) {}
@@ -102,7 +151,51 @@ private:
     std::atomic<float> amplitude;
 };
 
+
+
+// DSPFactory class
+// Thread-safe DSPFactory class
+class DSPFactory {
+public:
+    using DSPCreator = std::function<std::unique_ptr<DSP>()>;
+
+    static DSPFactory& instance() {
+        static DSPFactory instance;
+        return instance;
+    }
+
+    void register_dsp(const std::string &name, DSPCreator creator) {
+        std::lock_guard<std::mutex> lock(mutex_);
+        creators[name] = std::move(creator);
+    }
+
+    std::unique_ptr<DSP> create_dsp(const std::string &name) const {
+        std::lock_guard<std::mutex> lock(mutex_);
+        auto it = creators.find(name);
+        if (it != creators.end()) {
+            return it->second();
+        }
+        throw std::runtime_error("Unknown DSP type: " + name);
+    }
+
+    std::vector<std::string> get_registered_dsps() const {
+        std::lock_guard<std::mutex> lock(mutex_);
+        std::vector<std::string> dsp_names;
+        for (const auto &[key, _] : creators) {
+            dsp_names.push_back(key);
+        }
+        return dsp_names;
+    }
+
+private:
+    DSPFactory() = default;
+    mutable std::mutex mutex_; // Mutex for thread-safe access
+    std::unordered_map<std::string, DSPCreator> creators;
+};
+
+
 // PolyphonicDSP class to handle multiple voices
+// PolyphonicDSP class
 class PolyphonicDSP : public DSP {
 public:
     PolyphonicDSP(std::function<std::unique_ptr<DSP>()> create_dsp, int num_voices)
@@ -114,16 +207,19 @@ public:
 
     void set_parameter(const std::string &name,
                        const std::variant<float, int, std::string> &value) override {
+        std::lock_guard<std::mutex> lock(mutex_);
         for (auto &voice : voices) {
             voice->set_parameter(name, value);
         }
     }
 
     std::variant<float, int, std::string> get_parameter(const std::string &name) const override {
+        std::lock_guard<std::mutex> lock(mutex_);
         return voices[0]->get_parameter(name);
     }
 
     std::vector<std::string> get_parameter_names() const override {
+        std::lock_guard<std::mutex> lock(mutex_);
         return voices[0]->get_parameter_names();
     }
 
@@ -131,9 +227,12 @@ public:
                        double sample_rate) override {
         std::vector<float> mixed_output(nframes, 0.0f);
 
-        for (auto &voice : voices) {
-            std::vector<float *> voice_outputs(1, mixed_output.data());
-            voice->process_audio(nframes, inputs, voice_outputs.data(), sample_rate);
+        {
+            std::lock_guard<std::mutex> lock(mutex_);
+            for (auto &voice : voices) {
+                std::vector<float *> voice_outputs(1, mixed_output.data());
+                voice->process_audio(nframes, inputs, voice_outputs.data(), sample_rate);
+            }
         }
 
         for (jack_nframes_t i = 0; i < nframes; ++i) {
@@ -141,49 +240,21 @@ public:
         }
     }
 
-    int get_num_inputs() const override { return voices[0]->get_num_inputs(); }
-    int get_num_outputs() const override { return voices[0]->get_num_outputs(); }
+    int get_num_inputs() const override {
+        std::lock_guard<std::mutex> lock(mutex_);
+        return voices[0]->get_num_inputs();
+    }
+
+    int get_num_outputs() const override {
+        std::lock_guard<std::mutex> lock(mutex_);
+        return voices[0]->get_num_outputs();
+    }
 
 private:
     std::function<std::unique_ptr<DSP>()> create_dsp;
     std::vector<std::unique_ptr<DSP>> voices;
+    mutable std::mutex mutex_; // Mutex for thread-safe access
 };
-
-// DSPFactory class
-class DSPFactory {
-public:
-    using DSPCreator = std::function<std::unique_ptr<DSP>()>;
-
-    static DSPFactory& instance() {
-        static DSPFactory instance;
-        return instance;
-    }
-
-    void register_dsp(const std::string &name, DSPCreator creator) {
-        creators[name] = std::move(creator);
-    }
-    
-    std::unique_ptr<DSP> create_dsp(const std::string &name) const {
-        auto it = creators.find(name);
-        if (it != creators.end()) {
-            return it->second();
-        }
-        throw std::runtime_error("Unknown DSP type: " + name);
-    }
-
-    std::vector<std::string> get_registered_dsps() const {
-        std::vector<std::string> dsp_names;
-        for (const auto &[key, _] : creators) {
-            dsp_names.push_back(key);
-        }
-        return dsp_names;
-    }
-
-private:
-    DSPFactory() = default;
-    std::unordered_map<std::string, DSPCreator> creators;
-};
-
 
 // ThreadManager class for handling threading
 class ThreadManager {
