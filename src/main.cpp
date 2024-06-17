@@ -1,5 +1,3 @@
-// File: audio_engine.cpp
-
 #include "imgui.h"
 #include "imgui_impl_glfw.h"
 #include "imgui_impl_opengl3.h"
@@ -17,6 +15,7 @@
 #include <stdexcept>
 #include <thread>
 #include <unordered_map>
+#include <variant>
 #include <vector>
 
 // Constants
@@ -36,8 +35,8 @@ public:
     virtual void process_audio(jack_nframes_t nframes, float **inputs, float **outputs, double sample_rate) = 0;
     virtual int get_num_inputs() const = 0;
     virtual int get_num_outputs() const = 0;
-    virtual void set_parameter(const std::string &name, float value) = 0;
-    virtual float get_parameter(const std::string &name) const = 0;
+    virtual void set_parameter(const std::string &name, const std::variant<float, int, std::string> &value) = 0;
+    virtual std::variant<float, int, std::string> get_parameter(const std::string &name) const = 0;
     virtual std::vector<std::string> get_parameter_names() const = 0;
 };
 
@@ -46,19 +45,19 @@ class SinOsc : public DSP {
 public:
     SinOsc() : phase(0.0), frequency(DEFAULT_FREQUENCY), amplitude(DEFAULT_AMPLITUDE) {}
 
-    void set_parameter(const std::string &name, float value) override {
+    void set_parameter(const std::string &name, const std::variant<float, int, std::string> &value) override {
         if (name == "frequency") {
-            frequency.store(value);
+            frequency.store(std::get<float>(value));
         } else if (name == "amplitude") {
-            amplitude.store(value);
+            amplitude.store(std::get<float>(value));
         }
     }
 
-    float get_parameter(const std::string &name) const override {
+    std::variant<float, int, std::string> get_parameter(const std::string &name) const override {
         if (name == "frequency") {
-            return frequency.load();
+            return static_cast<float>(frequency.load());
         } else if (name == "amplitude") {
-            return amplitude.load();
+            return static_cast<float>(amplitude.load());
         }
         return 0.0f;
     }
@@ -93,15 +92,15 @@ class SquareWave : public DSP {
 public:
     SquareWave() : phase(0.0), frequency(DEFAULT_FREQUENCY) {}
 
-    void set_parameter(const std::string &name, float value) override {
+    void set_parameter(const std::string &name, const std::variant<float, int, std::string> &value) override {
         if (name == "frequency") {
-            frequency.store(value);
+            frequency.store(std::get<float>(value));
         }
     }
 
-    float get_parameter(const std::string &name) const override {
+    std::variant<float, int, std::string> get_parameter(const std::string &name) const override {
         if (name == "frequency") {
-            return frequency.load();
+            return static_cast<float>(frequency.load());
         }
         return 0.0f;
     }
@@ -134,15 +133,15 @@ class SawWave : public DSP {
 public:
     SawWave() : phase(0.0), frequency(DEFAULT_FREQUENCY) {}
 
-    void set_parameter(const std::string &name, float value) override {
+    void set_parameter(const std::string &name, const std::variant<float, int, std::string> &value) override {
         if (name == "frequency") {
-            frequency.store(value);
+            frequency.store(std::get<float>(value));
         }
     }
 
-    float get_parameter(const std::string &name) const override {
+    std::variant<float, int, std::string> get_parameter(const std::string &name) const override {
         if (name == "frequency") {
-            return frequency.load();
+            return static_cast<float>(frequency.load());
         }
         return 0.0f;
     }
@@ -192,20 +191,27 @@ public:
         throw std::runtime_error("Unknown DSP type: " + name);
     }
 
+    std::vector<std::string> get_registered_dsps() const {
+        std::vector<std::string> dsp_names;
+        for (const auto &pair : creators) {
+            dsp_names.push_back(pair.first);
+        }
+        return dsp_names;
+    }
+
 private:
     DSPFactory() = default;
     std::unordered_map<std::string, DSPCreator> creators;
 };
 
-// JackClient template class
-template <typename DSPType>
+// JackClient class to handle generic DSPs
 class JackClient {
 public:
-    JackClient(const char *client_name);
+    JackClient(const char *client_name, std::unique_ptr<DSP> dsp);
     ~JackClient();
 
-    DSPType *get_dsp() { return &dsp; }
-    const char *get_name() const { return name.c_str(); }
+    DSP* get_dsp() { return dsp.get(); }
+    const char* get_name() const { return name.c_str(); }
 
 private:
     static int process(jack_nframes_t nframes, void *arg);
@@ -214,14 +220,14 @@ private:
     void process_audio(jack_nframes_t nframes);
 
     jack_client_t *client = nullptr;
-    std::vector<jack_port_t *> input_ports;
-    std::vector<jack_port_t *> output_ports;
-    DSPType dsp;
+    std::vector<jack_port_t*> input_ports;
+    std::vector<jack_port_t*> output_ports;
+    std::unique_ptr<DSP> dsp;
     std::string name;
 };
 
-template <typename DSPType>
-JackClient<DSPType>::JackClient(const char *client_name) : name(client_name) {
+JackClient::JackClient(const char *client_name, std::unique_ptr<DSP> dsp)
+    : dsp(std::move(dsp)), name(client_name) { // Fixing the initialization order
     client = jack_client_open(name.c_str(), JackNullOption, nullptr);
     if (!client) {
         throw std::runtime_error("Failed to open JACK client");
@@ -234,8 +240,8 @@ JackClient<DSPType>::JackClient(const char *client_name) : name(client_name) {
 
     jack_on_shutdown(client, jack_shutdown, this);
 
-    int num_inputs = dsp.get_num_inputs();
-    int num_outputs = dsp.get_num_outputs();
+    int num_inputs = this->dsp->get_num_inputs();
+    int num_outputs = this->dsp->get_num_outputs();
 
     for (int i = 0; i < num_inputs; ++i) {
         input_ports.push_back(
@@ -253,56 +259,66 @@ JackClient<DSPType>::JackClient(const char *client_name) : name(client_name) {
     }
 }
 
-template <typename DSPType>
-JackClient<DSPType>::~JackClient() {
+JackClient::~JackClient() {
     if (client) {
         jack_client_close(client);
     }
 }
 
-template <typename DSPType>
-int JackClient<DSPType>::process(jack_nframes_t nframes, void *arg) {
-    auto *self = static_cast<JackClient<DSPType> *>(arg);
+int JackClient::process(jack_nframes_t nframes, void *arg) {
+    auto *self = static_cast<JackClient*>(arg);
     self->process_audio(nframes);
     return 0;
 }
 
-template <typename DSPType>
-void JackClient<DSPType>::jack_shutdown(void *arg) {
-    // Add necessary cleanup here
-    auto *self = static_cast<JackClient<DSPType>*>(arg);
+void JackClient::jack_shutdown(void *arg) {
+    auto *self = static_cast<JackClient*>(arg);
     self->client = nullptr;
     std::cerr << "JACK client has been shut down" << std::endl;
 }
 
-template <typename DSPType>
-void JackClient<DSPType>::process_audio(jack_nframes_t nframes) {
+void JackClient::process_audio(jack_nframes_t nframes) {
     double sample_rate = jack_get_sample_rate(client);
 
-    std::vector<float *> inputs(input_ports.size());
-    std::vector<float *> outputs(output_ports.size());
+    std::vector<float*> inputs(input_ports.size());
+    std::vector<float*> outputs(output_ports.size());
 
     for (size_t i = 0; i < input_ports.size(); ++i) {
-        inputs[i] = static_cast<float *>(jack_port_get_buffer(input_ports[i], nframes));
+        inputs[i] = static_cast<float*>(jack_port_get_buffer(input_ports[i], nframes));
     }
 
     for (size_t i = 0; i < output_ports.size(); ++i) {
-        outputs[i] = static_cast<float *>(jack_port_get_buffer(output_ports[i], nframes));
+        outputs[i] = static_cast<float*>(jack_port_get_buffer(output_ports[i], nframes));
     }
 
-    dsp.process_audio(nframes, inputs.data(), outputs.data(), sample_rate);
+    dsp->process_audio(nframes, inputs.data(), outputs.data(), sample_rate);
 }
 
+
 // Render GUI for a JackClient
-template <typename DSPType>
-void render_client_gui(JackClient<DSPType> *client) {
+void render_client_gui(JackClient *client) {
     ImGui::Begin(client->get_name());
     ImGui::Text("Simple DSP");
-    DSPType *dsp = client->get_dsp();
+    DSP *dsp = client->get_dsp();
     for (const auto &param : dsp->get_parameter_names()) {
-        float value = dsp->get_parameter(param);
-        if (ImGui::SliderFloat(param.c_str(), &value, 0.0f, 1.0f)) {
-            dsp->set_parameter(param, value);
+        auto value = dsp->get_parameter(param);
+        if (std::holds_alternative<float>(value)) {
+            float fvalue = std::get<float>(value);
+            if (ImGui::SliderFloat(param.c_str(), &fvalue, 0.0f, 1.0f)) {
+                dsp->set_parameter(param, fvalue);
+            }
+        } else if (std::holds_alternative<int>(value)) {
+            int ivalue = std::get<int>(value);
+            if (ImGui::SliderInt(param.c_str(), &ivalue, 0, 100)) {
+                dsp->set_parameter(param, ivalue);
+            }
+        } else if (std::holds_alternative<std::string>(value)) {
+            std::string svalue = std::get<std::string>(value);
+            char buffer[128];
+            strncpy(buffer, svalue.c_str(), sizeof(buffer));
+            if (ImGui::InputText(param.c_str(), buffer, sizeof(buffer))) {
+                dsp->set_parameter(param, std::string(buffer));
+            }
         }
     }
     ImGui::End();
@@ -317,10 +333,8 @@ int main(int, char **) {
     DSPFactory::instance().register_dsp(
         "SawWave", []() { return std::make_unique<SawWave>(); });
 
-    // Separate vectors for each DSP type
-    std::vector<std::unique_ptr<JackClient<SinOsc>>> sin_osc_clients;
-    std::vector<std::unique_ptr<JackClient<SquareWave>>> square_wave_clients;
-    std::vector<std::unique_ptr<JackClient<SawWave>>> saw_wave_clients;
+    // Vector for generic JackClients
+    std::vector<std::unique_ptr<JackClient>> jack_clients;
     std::string selected_dsp_type = "SinOsc"; // Default DSP type
 
     glfwSetErrorCallback(glfw_error_callback);
@@ -359,39 +373,25 @@ int main(int, char **) {
         if (ImGui::Button("Add JackClient")) {
             static int client_count = 1;
             std::string client_name = "DearJack" + std::to_string(client_count++);
-            if (selected_dsp_type == "SinOsc") {
-                sin_osc_clients.push_back(std::make_unique<JackClient<SinOsc>>(client_name.c_str()));
-            } else if (selected_dsp_type == "SquareWave") {
-                square_wave_clients.push_back(std::make_unique<JackClient<SquareWave>>(client_name.c_str()));
-            } else if (selected_dsp_type == "SawWave") {
-                saw_wave_clients.push_back(std::make_unique<JackClient<SawWave>>(client_name.c_str()));
-            }
+            auto dsp = DSPFactory::instance().create_dsp(selected_dsp_type);
+            jack_clients.push_back(std::make_unique<JackClient>(client_name.c_str(), std::move(dsp)));
         }
-        if (ImGui::Button("Remove Last JackClient")) {
-            if (selected_dsp_type == "SinOsc" && !sin_osc_clients.empty()) {
-                sin_osc_clients.pop_back();
-            } else if (selected_dsp_type == "SquareWave" && !square_wave_clients.empty()) {
-                square_wave_clients.pop_back();
-            } else if (selected_dsp_type == "SawWave" && !saw_wave_clients.empty()) {
-                saw_wave_clients.pop_back();
-            }
+        if (ImGui::Button("Remove Last JackClient") && !jack_clients.empty()) {
+            jack_clients.pop_back();
         }
 
         // Dropdown to select DSP type
-        const char *dsp_types[] = {"SinOsc", "SquareWave", "SawWave"};
+        const auto& dsp_types = DSPFactory::instance().get_registered_dsps();
         static int current_dsp_type = 0;
-        if (ImGui::Combo("DSP Type", &current_dsp_type, dsp_types, IM_ARRAYSIZE(dsp_types))) {
+        if (ImGui::Combo("DSP Type", &current_dsp_type, [](void* data, int idx, const char** out_text){
+            *out_text = static_cast<std::vector<std::string>*>(data)->at(idx).c_str();
+            return true;
+        }, (void*)&dsp_types, dsp_types.size())) {
             selected_dsp_type = dsp_types[current_dsp_type];
         }
 
         // Render GUI for each JackClient
-        for (auto &client : sin_osc_clients) {
-            render_client_gui(client.get());
-        }
-        for (auto &client : square_wave_clients) {
-            render_client_gui(client.get());
-        }
-        for (auto &client : saw_wave_clients) {
+        for (auto &client : jack_clients) {
             render_client_gui(client.get());
         }
 
@@ -414,3 +414,4 @@ int main(int, char **) {
 
     return 0;
 }
+
