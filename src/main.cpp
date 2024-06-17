@@ -17,6 +17,7 @@
 #include <queue>
 #include <ranges>
 #include <stdexcept>
+#include <string>
 #include <thread>
 #include <unordered_map>
 #include <variant>
@@ -83,13 +84,17 @@ public:
                      double sample_rate) override {
     double phase_increment = TWO_PI * frequency.load() / sample_rate;
     float amp = amplitude.load();
+    double local_phase = phase;
+
     for (jack_nframes_t i = 0; i < nframes; ++i) {
-      outputs[0][i] = amp * std::sin(phase);
-      phase += phase_increment;
-      if (phase >= TWO_PI) {
-        phase -= TWO_PI;
+      outputs[0][i] = amp * std::sin(local_phase);
+      local_phase += phase_increment;
+      if (local_phase >= TWO_PI) {
+        local_phase -= TWO_PI;
       }
     }
+
+    phase = local_phase;
   }
 
   int get_num_inputs() const override { return 0; }
@@ -129,13 +134,17 @@ public:
   void process_audio(jack_nframes_t nframes, float **inputs, float **outputs,
                      double sample_rate) override {
     double phase_increment = TWO_PI * frequency.load() / sample_rate;
+    double local_phase = phase;
+
     for (jack_nframes_t i = 0; i < nframes; ++i) {
-      outputs[0][i] = (phase < M_PI) ? 1.0f : -1.0f;
-      phase += phase_increment;
-      if (phase >= TWO_PI) {
-        phase -= TWO_PI;
+      outputs[0][i] = (local_phase < M_PI) ? 1.0f : -1.0f;
+      local_phase += phase_increment;
+      if (local_phase >= TWO_PI) {
+        local_phase -= TWO_PI;
       }
     }
+
+    phase = local_phase;
   }
 
   int get_num_inputs() const override { return 0; }
@@ -174,13 +183,17 @@ public:
   void process_audio(jack_nframes_t nframes, float **inputs, float **outputs,
                      double sample_rate) override {
     double phase_increment = TWO_PI * frequency.load() / sample_rate;
+    double local_phase = phase;
+
     for (jack_nframes_t i = 0; i < nframes; ++i) {
-      outputs[0][i] = 2.0f * (phase / TWO_PI) - 1.0f;
-      phase += phase_increment;
-      if (phase >= TWO_PI) {
-        phase -= TWO_PI;
+      outputs[0][i] = 2.0f * (local_phase / TWO_PI) - 1.0f;
+      local_phase += phase_increment;
+      if (local_phase >= TWO_PI) {
+        local_phase -= TWO_PI;
       }
     }
+
+    phase = local_phase;
   }
 
   int get_num_inputs() const override { return 0; }
@@ -202,10 +215,10 @@ public:
   }
 
   void register_dsp(const std::string &name, DSPCreator creator) {
-    creators[name] = creator;
+    creators[name] = std::move(creator);
   }
 
-  std::unique_ptr<DSP> create_dsp(const std::string &name) {
+  std::unique_ptr<DSP> create_dsp(const std::string &name) const {
     auto it = creators.find(name);
     if (it != creators.end()) {
       return it->second();
@@ -215,8 +228,9 @@ public:
 
   std::vector<std::string> get_registered_dsps() const {
     std::vector<std::string> dsp_names;
-    for (const auto &pair : creators | std::views::keys) {
-      dsp_names.push_back(pair);
+    dsp_names.reserve(creators.size());
+    for (const auto &[key, _] : creators) {
+      dsp_names.push_back(key);
     }
     return dsp_names;
   }
@@ -234,23 +248,18 @@ public:
   static void run_task(const std::function<void()> &task);
 
 private:
-  static std::vector<std::thread> threads;
-  static std::queue<std::function<void()>> tasks;
-  static std::mutex tasks_mutex;
-  static std::condition_variable tasks_available;
-  static bool quit_flag;
-
   static void worker_thread();
-};
 
-std::vector<std::thread> ThreadManager::threads;
-std::queue<std::function<void()>> ThreadManager::tasks;
-std::mutex ThreadManager::tasks_mutex;
-std::condition_variable ThreadManager::tasks_available;
-bool ThreadManager::quit_flag = false;
+  inline static std::vector<std::thread> threads;
+  inline static std::queue<std::function<void()>> tasks;
+  inline static std::mutex tasks_mutex;
+  inline static std::condition_variable tasks_available;
+  inline static bool quit_flag = false;
+};
 
 void ThreadManager::init(unsigned num_threads) {
   quit_flag = false;
+  threads.reserve(num_threads);
   for (unsigned i = 0; i < num_threads; ++i) {
     threads.emplace_back(worker_thread);
   }
@@ -332,8 +341,8 @@ JackClient::JackClient(const char *client_name, std::unique_ptr<DSP> dsp)
 
   jack_on_shutdown(client, jack_shutdown, this);
 
-  int num_inputs = this->dsp->get_num_inputs();
-  int num_outputs = this->dsp->get_num_outputs();
+  const int num_inputs = this->dsp->get_num_inputs();
+  const int num_outputs = this->dsp->get_num_outputs();
 
   input_ports.reserve(num_inputs);   // Reserve memory upfront
   output_ports.reserve(num_outputs); // Reserve memory upfront
@@ -391,7 +400,6 @@ void JackClient::process_audio(jack_nframes_t nframes) {
         static_cast<float *>(jack_port_get_buffer(output_ports[i], nframes));
   }
 
-  // Ensure no dynamic memory allocation within the callback
   dsp->process_audio(nframes, inputs.data(), outputs.data(), sample_rate);
 }
 
@@ -484,7 +492,7 @@ int main(int, char **) {
       static int client_count = 1;
       std::string client_name = "DearJack" + std::to_string(client_count++);
       auto dsp = DSPFactory::instance().create_dsp(selected_dsp_type);
-      jack_clients.push_back(
+      jack_clients.emplace_back(
           std::make_unique<JackClient>(client_name.c_str(), std::move(dsp)));
     }
     if (ImGui::Button("Remove Last JackClient") && !jack_clients.empty()) {
@@ -507,7 +515,7 @@ int main(int, char **) {
     }
 
     // Render GUI for each JackClient
-    for (auto &client : jack_clients) {
+    for (const auto &client : jack_clients) {
       render_client_gui(client.get());
     }
 
