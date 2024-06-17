@@ -55,20 +55,72 @@ private:
   std::atomic<double> frequency;
 };
 
+// SquareWave DSP implementation
+class SquareWave : public DSP {
+public:
+  SquareWave() : phase(0.0), frequency(DEFAULT_FREQUENCY) {}
+
+  void set_frequency(double freq) { frequency.store(freq); }
+
+  void process_audio(jack_nframes_t nframes, float *out,
+                     double sample_rate) override {
+    double phase_increment = TWO_PI * frequency.load() / sample_rate;
+    for (jack_nframes_t i = 0; i < nframes; ++i) {
+      out[i] = (phase < M_PI) ? 1.0f : -1.0f;
+      phase += phase_increment;
+      if (phase >= TWO_PI) {
+        phase -= TWO_PI;
+      }
+    }
+  }
+
+private:
+  double phase;
+  std::atomic<double> frequency;
+};
+
+// SawWave DSP implementation
+class SawWave : public DSP {
+public:
+  SawWave() : phase(0.0), frequency(DEFAULT_FREQUENCY) {}
+
+  void set_frequency(double freq) { frequency.store(freq); }
+
+  void process_audio(jack_nframes_t nframes, float *out,
+                     double sample_rate) override {
+    double phase_increment = TWO_PI * frequency.load() / sample_rate;
+    for (jack_nframes_t i = 0; i < nframes; ++i) {
+      out[i] = 2.0f * (phase / TWO_PI) - 1.0f;
+      phase += phase_increment;
+      if (phase >= TWO_PI) {
+        phase -= TWO_PI;
+      }
+    }
+  }
+
+private:
+  double phase;
+  std::atomic<double> frequency;
+};
+
 // Enumeration for DSP types
 enum class DSPType {
   SinOsc,
-  // Add other DSP types here
+  SquareWave,
+  SawWave,
 };
 
 // Function to create DSP based on DSPType
 std::unique_ptr<DSP> create_dsp(DSPType type) {
   switch (type) {
-    case DSPType::SinOsc:
-      return std::make_unique<SinOsc>();
-    // Add other DSP creation cases here
-    default:
-      throw std::runtime_error("Unknown DSP type");
+  case DSPType::SinOsc:
+    return std::make_unique<SinOsc>();
+  case DSPType::SquareWave:
+    return std::make_unique<SquareWave>();
+  case DSPType::SawWave:
+    return std::make_unique<SawWave>();
+  default:
+    throw std::runtime_error("Unknown DSP type");
   }
 }
 
@@ -144,11 +196,16 @@ void JackClient::process_audio(jack_nframes_t nframes) {
 
 void render_client_gui(JackClient *client) {
   ImGui::Begin(client->get_name());
-  ImGui::Text("Simple SinOsc");
+  ImGui::Text("Simple DSP");
   if (ImGui::SliderFloat("Frequency", &client->get_frequency(), 20.0f,
                          2000.0f)) {
     if (auto sin_osc = dynamic_cast<SinOsc *>(client->get_dsp())) {
       sin_osc->set_frequency(static_cast<double>(client->get_frequency()));
+    } else if (auto square_wave =
+                   dynamic_cast<SquareWave *>(client->get_dsp())) {
+      square_wave->set_frequency(static_cast<double>(client->get_frequency()));
+    } else if (auto saw_wave = dynamic_cast<SawWave *>(client->get_dsp())) {
+      saw_wave->set_frequency(static_cast<double>(client->get_frequency()));
     }
   }
   ImGui::End();
@@ -195,17 +252,18 @@ int main(int, char **) {
     if (ImGui::Button("Add JackClient")) {
       static int client_count = 1;
       std::string client_name = "DearJack" + std::to_string(client_count++);
-      jack_clients.push_back(
-          std::make_unique<JackClient>(client_name.c_str(), create_dsp(selected_dsp_type)));
+      jack_clients.push_back(std::make_unique<JackClient>(
+          client_name.c_str(), create_dsp(selected_dsp_type)));
     }
     if (ImGui::Button("Remove Last JackClient") && !jack_clients.empty()) {
       jack_clients.pop_back();
     }
 
     // Dropdown to select DSP type
-    const char* dsp_types[] = { "SinOsc" /*, Add other DSP type names here */ };
+    const char *dsp_types[] = {"SinOsc", "SquareWave", "SawWave"};
     static int current_dsp_type = 0;
-    if (ImGui::Combo("DSP Type", &current_dsp_type, dsp_types, IM_ARRAYSIZE(dsp_types))) {
+    if (ImGui::Combo("DSP Type", &current_dsp_type, dsp_types,
+                     IM_ARRAYSIZE(dsp_types))) {
       selected_dsp_type = static_cast<DSPType>(current_dsp_type);
     }
 
