@@ -228,7 +228,7 @@ private:
 };
 
 JackClient::JackClient(const char* client_name, std::unique_ptr<DSP> dsp)
-    : dsp(std::move(dsp)), name(client_name) { 
+    : dsp(std::move(dsp)), name(client_name) {
     client = jack_client_open(name.c_str(), JackNullOption, nullptr);
     if (!client) {
         throw std::runtime_error("Failed to open JACK client");
@@ -284,9 +284,9 @@ void JackClient::jack_shutdown(void* arg) {
 void JackClient::process_audio(jack_nframes_t nframes) {
     const double sample_rate = jack_get_sample_rate(client);
 
-    // Preallocate buffers outside the callback
-    thread_local std::vector<float*> inputs(input_ports.size());
-    thread_local std::vector<float*> outputs(output_ports.size());
+    // Local buffers to avoid thread_local issues
+    std::vector<float*> inputs(input_ports.size());
+    std::vector<float*> outputs(output_ports.size());
 
     for (size_t i = 0; i < input_ports.size(); ++i) {
         inputs[i] = static_cast<float*>(jack_port_get_buffer(input_ports[i], nframes));
@@ -307,7 +307,12 @@ void render_client_gui(JackClient* client) {
     DSP* dsp = client->get_dsp();
     for (const auto& param : dsp->get_parameter_names()) {
         auto value = dsp->get_parameter(param);
-        if (std::holds_alternative<float>(value)) {
+        if (param == "frequency" && std::holds_alternative<float>(value)) {
+            float fvalue = std::get<float>(value);
+            if (ImGui::SliderFloat(param.c_str(), &fvalue, 20.0f, 20000.0f)) {
+                dsp->set_parameter(param, fvalue);
+            }
+        } else if (param == "amplitude" && std::holds_alternative<float>(value)) {
             float fvalue = std::get<float>(value);
             if (ImGui::SliderFloat(param.c_str(), &fvalue, 0.0f, 1.0f)) {
                 dsp->set_parameter(param, fvalue);
@@ -420,3 +425,4 @@ int main(int, char **) {
 
     return 0;
 }
+
