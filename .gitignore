@@ -29,3 +29,4 @@ cmake_install.cmake
 CMakeCache.txt.bak
 DearJack
 Makefile
+build2/imgui.ini
