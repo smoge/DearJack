@@ -12,6 +12,7 @@
 #include <mutex>
 #include <stdexcept>
 #include <thread>
+#include <vector>
 
 // Constants
 constexpr double TWO_PI = 2.0 * M_PI;
@@ -137,18 +138,7 @@ void render_client_gui(JackClient *client) {
 }
 
 int main(int, char **) {
-  std::unique_ptr<JackClient> jack_client1;
-  std::unique_ptr<JackClient> jack_client2;
-
-  try {
-    jack_client1 =
-        std::make_unique<JackClient>("DearJack1", std::make_unique<SinOsc>());
-    jack_client2 =
-        std::make_unique<JackClient>("DearJack2", std::make_unique<SinOsc>());
-  } catch (const std::exception &e) {
-    std::fprintf(stderr, "Error initializing JackClient: %s\n", e.what());
-    return 1;
-  }
+  std::vector<std::unique_ptr<JackClient>> jack_clients;
 
   glfwSetErrorCallback(glfw_error_callback);
   if (!glfwInit()) {
@@ -183,8 +173,21 @@ int main(int, char **) {
     ImGui_ImplGlfw_NewFrame();
     ImGui::NewFrame();
 
-    render_client_gui(jack_client1.get());
-    render_client_gui(jack_client2.get());
+    // Add buttons to add/remove JackClients
+    if (ImGui::Button("Add JackClient")) {
+      static int client_count = 1;
+      std::string client_name = "DearJack" + std::to_string(client_count++);
+      jack_clients.push_back(
+          std::make_unique<JackClient>(client_name.c_str(), std::make_unique<SinOsc>()));
+    }
+    if (ImGui::Button("Remove Last JackClient") && !jack_clients.empty()) {
+      jack_clients.pop_back();
+    }
+
+    // Render GUI for each JackClient
+    for (auto &client : jack_clients) {
+      render_client_gui(client.get());
+    }
 
     ImGui::Render();
     int display_w, display_h;
