@@ -1,4 +1,3 @@
-
 #include "imgui.h"
 #include "imgui_impl_glfw.h"
 #include "imgui_impl_opengl3.h"
@@ -16,7 +15,6 @@
 #include <memory>
 #include <mutex>
 #include <queue>
-#include <ranges>
 #include <stdexcept>
 #include <string>
 #include <thread>
@@ -26,93 +24,39 @@
 
 // Constants
 constexpr double TWO_PI = 2.0 * M_PI;
-constexpr float DEFAULT_FREQUENCY = 440.0f; // Default frequency in Hz
-constexpr float DEFAULT_AMPLITUDE = 0.5f;   // Default amplitude
+constexpr float DEFAULT_FREQUENCY = 440.0f;
+constexpr float DEFAULT_AMPLITUDE = 0.5f;
 
-// GLFW error callback function
+// Error callback function for GLFW
 void glfw_error_callback(int error, const char *description) noexcept {
   std::fprintf(stderr, "Glfw Error %d: %s\n", error, description);
 }
 
-// DSP base class
-// Abstract base class defining the interface for DSP processors
+// Abstract DSP base class defining the interface
 class DSP {
 public:
-  // Virtual destructor for safe polymorphic destruction
   virtual ~DSP() = default;
 
-  // Process audio frames
-  // @param nframes: Number of frames to process
-  // @param inputs: Array of input buffers
-  // @param outputs: Array of output buffers
-  // @param sample_rate: Sample rate of the audio stream
   virtual void process_audio(jack_nframes_t nframes, float **inputs,
                              float **outputs, double sample_rate) = 0;
-
-  // Get the number of input channels
-  // @return: Number of input channels
   virtual int get_num_inputs() const = 0;
-
-  // Get the number of output channels
-  // @return: Number of output channels
   virtual int get_num_outputs() const = 0;
-
-  // Set a parameter's value
-  // @param name: Name of the parameter
-  // @param value: New value for the parameter
   virtual void
   set_parameter(const std::string &name,
                 const std::variant<float, int, std::string> &value) = 0;
-
-  // Get a parameter's value
-  // @param name: Name of the parameter
-  // @return: Value of the parameter
   virtual std::variant<float, int, std::string>
   get_parameter(const std::string &name) const = 0;
-
-  // Get the names of all available parameters
-  // @return: Vector containing the names of all parameters
   virtual std::vector<std::string> get_parameter_names() const = 0;
 };
 
-// SinOsc DSP implementation
-/**
- * Class representing a Sinusoidal Oscillator DSP.
- *
- * This class implements the DSP interface with methods to set parameters like
- * frequency and amplitude, get parameter values, process audio frames, and
- * retrieve parameter names. The oscillator generates a sine wave based on the
- * frequency and amplitude parameters.
- *
- * Parameters:
- * - frequency: Frequency of the sine wave in Hz.
- * - amplitude: Amplitude of the sine wave.
- *
- * Methods:
- * - set_parameter: Set the value of a parameter (frequency or amplitude).
- * - get_parameter: Get the value of a parameter (frequency or amplitude).
- * - get_parameter_names: Get the names of available parameters (frequency,
- * amplitude).
- * - process_audio: Process audio frames by generating a sine wave.
- * - get_num_inputs: Get the number of input channels (always 0 for this
- * oscillator).
- * - get_num_outputs: Get the number of output channels (always 1 for this
- * oscillator).
- *
- * Member Variables:
- * - phase: Current phase of the oscillator.
- * - frequency: Atomic variable for storing the frequency.
- * - amplitude: Atomic variable for storing the amplitude.
- */
-class SinOsc : public DSP {
-public:
-  SinOsc()
-      : phase(0.0), frequency(DEFAULT_FREQUENCY), amplitude(DEFAULT_AMPLITUDE) {
-  }
 
-  void
-  set_parameter(const std::string &name,
-                const std::variant<float, int, std::string> &value) override {
+class Oscillator : public DSP {
+public:
+  Oscillator()
+      : phase(0.0), frequency(DEFAULT_FREQUENCY), amplitude(DEFAULT_AMPLITUDE) {}
+
+  void set_parameter(const std::string &name,
+                     const std::variant<float, int, std::string> &value) override {
     if (name == "frequency") {
       frequency.store(std::get<float>(value));
     } else if (name == "amplitude") {
@@ -120,8 +64,7 @@ public:
     }
   }
 
-  std::variant<float, int, std::string>
-  get_parameter(const std::string &name) const override {
+  std::variant<float, int, std::string> get_parameter(const std::string &name) const override {
     if (name == "frequency") {
       return static_cast<float>(frequency.load());
     } else if (name == "amplitude") {
@@ -141,7 +84,7 @@ public:
     double local_phase = phase;
 
     for (jack_nframes_t i = 0; i < nframes; ++i) {
-      outputs[0][i] = amp * std::sin(local_phase);
+      outputs[0][i] = amp * generate_wave(local_phase);
       local_phase += phase_increment;
       if (local_phase >= TWO_PI) {
         local_phase -= TWO_PI;
@@ -154,13 +97,37 @@ public:
   int get_num_inputs() const override { return 0; }
   int get_num_outputs() const override { return 1; }
 
+protected:
+  virtual float generate_wave(double phase) const = 0;
+
 private:
   double phase;
   std::atomic<double> frequency;
   std::atomic<float> amplitude;
 };
 
-// Thread-safe DSPFactory class
+class SinOsc : public Oscillator {
+protected:
+  float generate_wave(double phase) const override {
+    return std::sin(phase);
+  }
+};
+
+class SquareWave : public Oscillator {
+protected:
+  float generate_wave(double phase) const override {
+    return (std::sin(phase) > 0) ? 1.0f : -1.0f;
+  }
+};
+
+class SawWave : public Oscillator {
+protected:
+  float generate_wave(double phase) const override {
+    return 2.0f * (phase / TWO_PI - std::floor(phase / TWO_PI + 0.5));
+  }
+};
+
+// Thread-safe DSP factory class
 class DSPFactory {
 public:
   using DSPCreator = std::function<std::unique_ptr<DSP>()>;
@@ -195,10 +162,11 @@ public:
 
 private:
   DSPFactory() = default;
-  mutable std::mutex mutex_; // Mutex for thread-safe access
+  mutable std::mutex mutex_;
   std::unordered_map<std::string, DSPCreator> creators;
 };
 
+// Polyphonic DSP Class
 class PolyphonicDSP : public DSP {
 public:
   PolyphonicDSP(std::function<std::unique_ptr<DSP>()> create_dsp,
@@ -233,13 +201,10 @@ public:
                      double sample_rate) override {
     std::vector<float> mixed_output(nframes, 0.0f);
 
-    {
-      std::lock_guard<std::mutex> lock(mutex_);
-      for (auto &voice : voices) {
-        std::vector<float *> voice_outputs(1, mixed_output.data());
-        voice->process_audio(nframes, inputs, voice_outputs.data(),
-                             sample_rate);
-      }
+    std::lock_guard<std::mutex> lock(mutex_);
+    for (auto &voice : voices) {
+      std::vector<float *> voice_outputs(1, mixed_output.data());
+      voice->process_audio(nframes, inputs, voice_outputs.data(), sample_rate);
     }
 
     for (jack_nframes_t i = 0; i < nframes; ++i) {
@@ -260,10 +225,10 @@ public:
 private:
   std::function<std::unique_ptr<DSP>()> create_dsp;
   std::vector<std::unique_ptr<DSP>> voices;
-  mutable std::mutex mutex_; // Mutex for thread-safe access
+  mutable std::mutex mutex_;
 };
 
-// ThreadManager class for handling threading
+// Thread Manager class
 class ThreadManager {
 public:
   static void init(unsigned num_threads);
@@ -272,6 +237,7 @@ public:
 
 private:
   static void worker_thread();
+  static bool initialize_thread(unsigned index);
 
   inline static std::vector<std::thread> threads;
   inline static std::queue<std::function<void()>> tasks;
@@ -281,10 +247,45 @@ private:
 };
 
 void ThreadManager::init(unsigned num_threads) {
-  quit_flag = false;
-  threads.reserve(num_threads);
-  for (unsigned i = 0; i < num_threads; ++i) {
+  unsigned thread_count =
+      num_threads == 0 ? std::max(1u, std::thread::hardware_concurrency())
+                       : num_threads;
+
+  threads.clear();
+  threads.reserve(thread_count);
+
+  if (thread_count > 0) {
+    try {
+      for (unsigned i = 0; i < thread_count; ++i) {
+        if (!initialize_thread(i)) {
+          throw std::runtime_error("Failed to initialize worker thread");
+        }
+      }
+    } catch (const std::exception &e) {
+      std::cerr << "Exception caught during thread initialization: " << e.what()
+                << std::endl;
+    }
+  }
+}
+
+bool ThreadManager::initialize_thread(unsigned index) {
+  try {
     threads.emplace_back(worker_thread);
+
+    // Affinitize thread to specific core if required for better performance
+    cpu_set_t cpuset;
+    CPU_ZERO(&cpuset);
+    CPU_SET(index % std::thread::hardware_concurrency(), &cpuset);
+    int rc = pthread_setaffinity_np(threads.back().native_handle(),
+                                    sizeof(cpu_set_t), &cpuset);
+    if (rc != 0) {
+      std::cerr << "Error calling pthread_setaffinity_np: " << rc << std::endl;
+    }
+
+    return true;
+  } catch (const std::exception &e) {
+    std::cerr << "Exception in initializing thread: " << e.what() << std::endl;
+    return false;
   }
 }
 
@@ -294,9 +295,10 @@ void ThreadManager::shutdown() {
     quit_flag = true;
   }
   tasks_available.notify_all();
-  for (auto &thread : threads) {
-    if (thread.joinable()) {
-      thread.join();
+
+  for (std::thread &t : threads) {
+    if (t.joinable()) {
+      t.join();
     }
   }
   threads.clear();
@@ -315,7 +317,7 @@ void ThreadManager::worker_thread() {
     std::function<void()> task;
     {
       std::unique_lock<std::mutex> lock(tasks_mutex);
-      tasks_available.wait(lock, [] { return quit_flag || !tasks.empty(); });
+      tasks_available.wait(lock, [] { return !tasks.empty() || quit_flag; });
 
       if (quit_flag && tasks.empty()) {
         return;
@@ -324,6 +326,8 @@ void ThreadManager::worker_thread() {
       task = std::move(tasks.front());
       tasks.pop();
     }
+
+    // Execute the task
     task();
   }
 }
@@ -427,10 +431,13 @@ void JackClient::process_audio(jack_nframes_t nframes) {
 }
 
 // Render GUI for a JackClient
+
+
+// Render GUI for a JackClient
 void render_client_gui(JackClient *client) {
-  ImGui::Begin(client->get_name());
-  ImGui::Text("Simple DSP");
-  DSP *dsp = client->get_dsp();
+    ImGui::Begin(client->get_name());  
+    ImGui::Text("Simple DSP");
+    DSP *dsp = client->get_dsp();
   for (const auto &param : dsp->get_parameter_names()) {
     auto value = dsp->get_parameter(param);
     if (param == "frequency" && std::holds_alternative<float>(value)) {
@@ -452,6 +459,7 @@ void render_client_gui(JackClient *client) {
       std::string svalue = std::get<std::string>(value);
       char buffer[128];
       std::strncpy(buffer, svalue.c_str(), sizeof(buffer));
+      buffer[sizeof(buffer) - 1] = '\0'; // Ensure null termination
       if (ImGui::InputText(param.c_str(), buffer, sizeof(buffer))) {
         dsp->set_parameter(param, std::string(buffer));
       }
@@ -460,25 +468,26 @@ void render_client_gui(JackClient *client) {
   ImGui::End();
 }
 
-// Main functionint main(int, char **) {
-// Register DSP types
+// Main function
 int main(int, char **) {
+  // Register DSP types
   DSPFactory::instance().register_dsp("SinOsc", []() -> std::unique_ptr<DSP> {
     return std::make_unique<SinOsc>();
   });
-  // DSPFactory::instance().register_dsp(
-  //     "SquareWave", []() -> std::unique_ptr<DSP> { return
-  //     std::make_unique<SquareWave>(); });
-  // DSPFactory::instance().register_dsp(
-  //     "SawWave", []() -> std::unique_ptr<DSP> { return
-  //     std::make_unique<SawWave>(); });
+
+    DSPFactory::instance().register_dsp(
+      "SquareWave", []() -> std::unique_ptr<DSP> { return
+      std::make_unique<SquareWave>(); });
+  DSPFactory::instance().register_dsp(
+      "SawWave", []() -> std::unique_ptr<DSP> { return
+      std::make_unique<SawWave>(); });
 
   // Initialize threading
   ThreadManager::init(std::thread::hardware_concurrency());
 
   // Vector for generic JackClients
   std::vector<std::unique_ptr<JackClient>> jack_clients;
-  std::string selected_dsp_type = "SinOsc"; // Default DSP type
+  std::string selected_dsp_type = "SinOsc";
 
   glfwSetErrorCallback(glfw_error_callback);
   if (!glfwInit()) {
@@ -523,7 +532,7 @@ int main(int, char **) {
           [dsp_name = selected_dsp_type]() {
             return DSPFactory::instance().create_dsp(dsp_name);
           },
-          8); // Number of voices
+          8);
       jack_clients.emplace_back(std::make_unique<JackClient>(
           client_name.c_str(), std::move(poly_dsp)));
     }
