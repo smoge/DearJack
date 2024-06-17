@@ -55,6 +55,23 @@ private:
   std::atomic<double> frequency;
 };
 
+// Enumeration for DSP types
+enum class DSPType {
+  SinOsc,
+  // Add other DSP types here
+};
+
+// Function to create DSP based on DSPType
+std::unique_ptr<DSP> create_dsp(DSPType type) {
+  switch (type) {
+    case DSPType::SinOsc:
+      return std::make_unique<SinOsc>();
+    // Add other DSP creation cases here
+    default:
+      throw std::runtime_error("Unknown DSP type");
+  }
+}
+
 class JackClient {
 public:
   JackClient(const char *client_name, std::unique_ptr<DSP> dsp);
@@ -139,6 +156,7 @@ void render_client_gui(JackClient *client) {
 
 int main(int, char **) {
   std::vector<std::unique_ptr<JackClient>> jack_clients;
+  DSPType selected_dsp_type = DSPType::SinOsc; // Default DSP type
 
   glfwSetErrorCallback(glfw_error_callback);
   if (!glfwInit()) {
@@ -178,10 +196,17 @@ int main(int, char **) {
       static int client_count = 1;
       std::string client_name = "DearJack" + std::to_string(client_count++);
       jack_clients.push_back(
-          std::make_unique<JackClient>(client_name.c_str(), std::make_unique<SinOsc>()));
+          std::make_unique<JackClient>(client_name.c_str(), create_dsp(selected_dsp_type)));
     }
     if (ImGui::Button("Remove Last JackClient") && !jack_clients.empty()) {
       jack_clients.pop_back();
+    }
+
+    // Dropdown to select DSP type
+    const char* dsp_types[] = { "SinOsc" /*, Add other DSP type names here */ };
+    static int current_dsp_type = 0;
+    if (ImGui::Combo("DSP Type", &current_dsp_type, dsp_types, IM_ARRAYSIZE(dsp_types))) {
+      selected_dsp_type = static_cast<DSPType>(current_dsp_type);
     }
 
     // Render GUI for each JackClient
